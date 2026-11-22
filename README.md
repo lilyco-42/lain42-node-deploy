@@ -4,6 +4,7 @@
 
 - **上游 Fork**：[lilyco-42/sing-box-yg](https://github.com/lilyco-42/sing-box-yg)（fork 自 `yonggekkk/sing-box-yg`）
 - **大陆加速入口**：`https://sh.lain42.top`
+- **完整图文与运维指南**：[GUIDELINE.md](./GUIDELINE.md) ｜ 在线教程：`https://lain42.top/proxy-guide/` & `https://dev.lain42.top/vpn`
 
 ## 1. 在新 VPS 上一键部署并极限调优
 
