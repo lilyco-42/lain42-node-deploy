@@ -19,13 +19,14 @@ NAME_PREFIX="${LAIN42_NAME:-}"
 VLESS_PORT="${LAIN42_VLESS_PORT:-443}"
 VMESS_PORT="${LAIN42_VMESS_PORT:-2052}"
 HY2_PORT="${LAIN42_HY2_PORT:-51466}"
+HY2_HOP_RANGE="${LAIN42_HY2_HOP:-20000-40000}"
 TUIC_PORT="${LAIN42_TUIC_PORT:-24062}"
 ANYTLS_PORT="${LAIN42_ANYTLS_PORT:-34657}"
 SNI="${LAIN42_SNI:-apple.com}"
 WS_HOST="${LAIN42_WS_HOST:-www.bing.com}"
 UUID="${LAIN42_UUID:-}"
 MIRROR_BASE="${LAIN42_MIRROR:-https://sh.lain42.top}"
-SINGBOX_VERSION="${LAIN42_SINGBOX_VER:-1.11.4}"
+SINGBOX_VERSION="${LAIN42_SINGBOX_VER:-1.12.0}"
 REGISTER_URL="${LAIN42_REGISTER_URL:-}"
 REGISTER_TOKEN="${LAIN42_REGISTER_TOKEN:-}"
 USE_YG_MENU=0
@@ -325,6 +326,34 @@ generate_config() {
         "certificate_path": "/etc/s-box/cert.pem",
         "key_path": "/etc/s-box/private.key"
       }
+    },
+    {
+      "type": "anytls",
+      "tag": "anytls-sb",
+      "listen": "::",
+      "listen_port": ${ANYTLS_PORT},
+      "tcp_fast_open": true,
+      "users": [
+        {
+          "password": "${UUID}"
+        }
+      ],
+      "padding_scheme": [
+        "stop=8",
+        "0=30-30",
+        "1=100-400",
+        "2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000",
+        "3=9-9,500-1000",
+        "4=500-1000",
+        "5=500-1000",
+        "6=500-1000",
+        "7=500-1000"
+      ],
+      "tls": {
+        "enabled": true,
+        "certificate_path": "/etc/s-box/cert.pem",
+        "key_path": "/etc/s-box/private.key"
+      }
     }
   ],
   "outbounds": [
@@ -367,11 +396,22 @@ EOF
   sleep 1
   systemctl is-active --quiet sing-box || err "sing-box 启动失败，请查看 journalctl -u sing-box"
 
-  # 放行防火墙端口 (ufw / firewalld)
+  # 放行防火墙端口 (ufw) 并配置 Hysteria2 UDP 端口跳跃 (Port Hopping: 20000-40000 -> HY2_PORT)
   if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
-    for p in "$VLESS_PORT/tcp" "$VMESS_PORT/tcp" "$HY2_PORT/udp" "$TUIC_PORT/udp"; do
+    for p in "$VLESS_PORT/tcp" "$VMESS_PORT/tcp" "$ANYTLS_PORT/tcp" "$HY2_PORT/udp" "$TUIC_PORT/udp"; do
       ufw allow "$p" >/dev/null 2>&1 || true
     done
+    ufw allow "${HY2_HOP_RANGE//-/:}/udp" >/dev/null 2>&1 || true
+  fi
+  if command -v iptables >/dev/null 2>&1 && [[ -n "${HY2_HOP_RANGE}" ]]; then
+    local hop_colon="${HY2_HOP_RANGE//-/:}"
+    iptables -t nat -C PREROUTING -p udp --dport "${hop_colon}" -j DNAT --to-destination ":${HY2_PORT}" 2>/dev/null || \
+      iptables -t nat -A PREROUTING -p udp --dport "${hop_colon}" -j DNAT --to-destination ":${HY2_PORT}" 2>/dev/null || true
+    if command -v ip6tables >/dev/null 2>&1; then
+      ip6tables -t nat -C PREROUTING -p udp --dport "${hop_colon}" -j DNAT --to-destination ":${HY2_PORT}" 2>/dev/null || \
+        ip6tables -t nat -A PREROUTING -p udp --dport "${hop_colon}" -j DNAT --to-destination ":${HY2_PORT}" 2>/dev/null || true
+    fi
+    ok "Hysteria2 UDP 端口跳跃已启用: ${HY2_HOP_RANGE} -> ${HY2_PORT}"
   fi
 
   # 生成标准 Lain42 接入 JSON (可直接导入 lain42.top proxy-extras.json 与 dev.lain42.top)
@@ -417,6 +457,7 @@ EOF
     "type": "hysteria2",
     "server": "${pub_ip}",
     "port": ${HY2_PORT},
+    "ports": "${HY2_HOP_RANGE}",
     "password": "${UUID}",
     "sni": "${WS_HOST}",
     "alpn": ["h3"],
@@ -436,6 +477,16 @@ EOF
     "congestion-controller": "bbr",
     "skip-cert-verify": true,
     "udp": true
+  },
+  {
+    "name": "${NAME_PREFIX} · AnyTLS",
+    "type": "anytls",
+    "server": "${pub_ip}",
+    "port": ${ANYTLS_PORT},
+    "password": "${UUID}",
+    "sni": "${WS_HOST}",
+    "skip-cert-verify": true,
+    "udp": true
   }
 ]
 EOF
@@ -448,8 +499,9 @@ EOF
   echo "  地区标签: ${NAME_PREFIX}"
   echo "  VLESS:    ${pub_ip}:${VLESS_PORT} (Reality, pbk=${pub_key}, sid=${short_id})"
   echo "  VMess:    ${pub_ip}:${VMESS_PORT} (WS, path=${ws_path})"
-  echo "  Hy2:      ${pub_ip}:${HY2_PORT} (UDP/QUIC)"
+  echo "  Hy2:      ${pub_ip}:${HY2_PORT} (UDP/QUIC + 端口跳跃 ${HY2_HOP_RANGE})"
   echo "  TUIC v5:  ${pub_ip}:${TUIC_PORT} (UDP/BBR)"
+  echo "  AnyTLS:   ${pub_ip}:${ANYTLS_PORT} (TLS 会话复用 + Padding)"
   echo "================================================================"
   echo ""
   echo "在控制机执行以下命令即可一键接入 lain42.top + dev.lain42.top："
