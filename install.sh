@@ -20,8 +20,11 @@ VLESS_PORT="${LAIN42_VLESS_PORT:-443}"
 VMESS_PORT="${LAIN42_VMESS_PORT:-2052}"
 HY2_PORT="${LAIN42_HY2_PORT:-51466}"
 HY2_HOP_RANGE="${LAIN42_HY2_HOP:-20000-40000}"
+HY2_UP="${LAIN42_HY2_UP:-100}"
+HY2_DOWN="${LAIN42_HY2_DOWN:-200}"
 TUIC_PORT="${LAIN42_TUIC_PORT:-24062}"
 ANYTLS_PORT="${LAIN42_ANYTLS_PORT:-34657}"
+BUFFER_MB="${LAIN42_BUFFER_MB:-64}"
 SNI="${LAIN42_SNI:-apple.com}"
 WS_HOST="${LAIN42_WS_HOST:-www.bing.com}"
 UUID="${LAIN42_UUID:-}"
@@ -31,6 +34,7 @@ REGISTER_URL="${LAIN42_REGISTER_URL:-}"
 REGISTER_TOKEN="${LAIN42_REGISTER_TOKEN:-}"
 USE_YG_MENU=0
 SKIP_TUNE=0
+TUNE_ONLY=0
 
 usage() {
   cat <<'EOF'
@@ -44,16 +48,21 @@ Lain42 一键节点部署与调优脚本
   --vless-port <端口>   VLESS Reality 监听端口 (默认: 443)
   --vmess-port <端口>   VMess WS 监听端口 (默认: 2052)
   --hy2-port <端口>     Hysteria2 监听端口 (默认: 51466)
+  --hy2-up <Mbps>       Hysteria2 客户端默认上行 Brutal 带宽 (默认: 100)
+  --hy2-down <Mbps>     Hysteria2 客户端默认下行 Brutal 带宽 (默认: 200)
   --tuic-port <端口>    TUIC v5 监听端口 (默认: 24062)
   --anytls-port <端口>  AnyTLS 监听端口 (默认: 34657)
+  --buffer-mb <MB>      内核 Socket 收发缓冲区上限 MB (默认: 64，小内存机可设 32)
   --sni <域名>          Reality 伪装域名 (默认: apple.com)
   --uuid <UUID>         指定共享 UUID (默认自动生成)
+  --tune-only           仅执行内核 BBR + fq + 大缓冲区调优（不改动现有代理配置，适合老节点原地提速）
   --yg                  直接拉起 fork 后的 sing-box-yg 完整交互菜单 (加速镜像)
   --skip-tune           跳过内核 BBR/TCP/UDP 网络栈调优
   -h, --help            显示此帮助
 
 示例:
   curl -fsSL https://sh.lain42.top | bash -s -- --region "🇯🇵 日本 · 东京"
+  curl -fsSL https://sh.lain42.top | bash -s -- --tune-only --buffer-mb 64
   curl -fsSL https://sh.lain42.top | bash -s -- --yg
 EOF
 }
@@ -65,10 +74,14 @@ while [[ $# -gt 0 ]]; do
     --vless-port)  VLESS_PORT="$2"; shift 2 ;;
     --vmess-port)  VMESS_PORT="$2"; shift 2 ;;
     --hy2-port)    HY2_PORT="$2"; shift 2 ;;
+    --hy2-up)      HY2_UP="$2"; shift 2 ;;
+    --hy2-down)    HY2_DOWN="$2"; shift 2 ;;
     --tuic-port)   TUIC_PORT="$2"; shift 2 ;;
     --anytls-port) ANYTLS_PORT="$2"; shift 2 ;;
+    --buffer-mb)   BUFFER_MB="$2"; shift 2 ;;
     --sni)         SNI="$2"; shift 2 ;;
     --uuid)        UUID="$2"; shift 2 ;;
+    --tune-only)   TUNE_ONLY=1; shift ;;
     --yg)          USE_YG_MENU=1; shift ;;
     --skip-tune)   SKIP_TUNE=1; shift ;;
     -h|--help)     usage; exit 0 ;;
@@ -101,10 +114,11 @@ install_deps() {
 
 # 2. 内核网络栈极限调优 (BBR + fq + TCP/UDP 大缓冲区 + TFO + 文件描述符)
 tune_kernel() {
-  info "正在执行 Linux 内核网络栈调优 (BBR + fq + 64MB Socket Buffer + TFO)..."
+  local buf_bytes=$((BUFFER_MB * 1024 * 1024))
+  info "正在执行 Linux 内核网络栈调优 (BBR + fq + ${BUFFER_MB}MB Socket Buffer + TFO)..."
   modprobe tcp_bbr 2>/dev/null || true
-  cat > /etc/sysctl.d/99-lain42-proxy-tune.conf <<'EOF'
-# Lain42 Proxy High-Throughput Kernel Tuning
+  cat > /etc/sysctl.d/99-lain42-proxy-tune.conf <<EOF
+# Lain42 Proxy High-Throughput Kernel Tuning (QUIC / TUIC v5 / Hysteria2 / AnyTLS)
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 net.ipv4.tcp_fastopen = 3
@@ -116,15 +130,15 @@ net.ipv4.tcp_fin_timeout = 15
 net.ipv4.tcp_keepalive_time = 300
 net.ipv4.tcp_keepalive_intvl = 30
 net.ipv4.tcp_keepalive_probes = 5
-net.core.rmem_max = 67108864
-net.core.wmem_max = 67108864
+net.core.rmem_max = ${buf_bytes}
+net.core.wmem_max = ${buf_bytes}
 net.core.rmem_default = 1048576
 net.core.wmem_default = 1048576
 net.core.optmem_max = 65536
 net.core.netdev_max_backlog = 32768
 net.core.somaxconn = 32768
-net.ipv4.tcp_rmem = 4096 131072 67108864
-net.ipv4.tcp_wmem = 4096 131072 67108864
+net.ipv4.tcp_rmem = 4096 131072 ${buf_bytes}
+net.ipv4.tcp_wmem = 4096 131072 ${buf_bytes}
 net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
 net.ipv4.tcp_max_syn_backlog = 16384
@@ -139,7 +153,7 @@ EOF
 root soft nofile 1048576
 root hard nofile 1048576
 EOF
-  ok "内核调优完成 (拥塞控制: $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo unknown))"
+  ok "内核调优完成 (cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo unknown), qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo unknown), rmem_max=$(sysctl -n net.core.rmem_max 2>/dev/null || echo unknown), slow_start_after_idle=$(sysctl -n net.ipv4.tcp_slow_start_after_idle 2>/dev/null || echo unknown))"
 }
 
 # 3. 下载并安装 sing-box (优先走 GitHub，失败自动回退 sh.lain42.top 加速镜像)
@@ -411,6 +425,9 @@ EOF
       ip6tables -t nat -C PREROUTING -p udp --dport "${hop_colon}" -j DNAT --to-destination ":${HY2_PORT}" 2>/dev/null || \
         ip6tables -t nat -A PREROUTING -p udp --dport "${hop_colon}" -j DNAT --to-destination ":${HY2_PORT}" 2>/dev/null || true
     fi
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+      netfilter-persistent save >/dev/null 2>&1 || true
+    fi
     ok "Hysteria2 UDP 端口跳跃已启用: ${HY2_HOP_RANGE} -> ${HY2_PORT}"
   fi
 
@@ -458,6 +475,8 @@ EOF
     "server": "${pub_ip}",
     "port": ${HY2_PORT},
     "ports": "${HY2_HOP_RANGE}",
+    "up": "${HY2_UP} Mbps",
+    "down": "${HY2_DOWN} Mbps",
     "password": "${UUID}",
     "sni": "${WS_HOST}",
     "alpn": ["h3"],
@@ -475,6 +494,8 @@ EOF
     "alpn": ["h3"],
     "udp-relay-mode": "native",
     "congestion-controller": "bbr",
+    "reduce-rtt": true,
+    "heartbeat-interval": 10000,
     "skip-cert-verify": true,
     "udp": true
   },
@@ -499,8 +520,8 @@ EOF
   echo "  地区标签: ${NAME_PREFIX}"
   echo "  VLESS:    ${pub_ip}:${VLESS_PORT} (Reality, pbk=${pub_key}, sid=${short_id})"
   echo "  VMess:    ${pub_ip}:${VMESS_PORT} (WS, path=${ws_path})"
-  echo "  Hy2:      ${pub_ip}:${HY2_PORT} (UDP/QUIC + 端口跳跃 ${HY2_HOP_RANGE})"
-  echo "  TUIC v5:  ${pub_ip}:${TUIC_PORT} (UDP/BBR)"
+  echo "  Hy2:      ${pub_ip}:${HY2_PORT} (UDP/QUIC Brutal ${HY2_UP}/${HY2_DOWN}Mbps + 端口跳跃 ${HY2_HOP_RANGE})"
+  echo "  TUIC v5:  ${pub_ip}:${TUIC_PORT} (UDP/BBR + 0-RTT + Native Datagram)"
   echo "  AnyTLS:   ${pub_ip}:${ANYTLS_PORT} (TLS 会话复用 + Padding)"
   echo "================================================================"
   echo ""
@@ -509,6 +530,14 @@ EOF
 }
 
 main() {
+  if [[ "$TUNE_ONLY" -eq 1 ]]; then
+    tune_kernel
+    if systemctl is-active --quiet sing-box 2>/dev/null; then
+      info "检测到运行中的 sing-box，正在重启以使 UDP 监听套接字应用新缓冲区上限..."
+      systemctl restart sing-box && ok "sing-box 已重启生效"
+    fi
+    return
+  fi
   install_deps
   if [[ "$SKIP_TUNE" -eq 0 ]]; then
     tune_kernel

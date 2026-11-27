@@ -4,16 +4,20 @@
 
 - **上游 Fork**：[lilyco-42/sing-box-yg](https://github.com/lilyco-42/sing-box-yg)（fork 自 `yonggekkk/sing-box-yg`）
 - **大陆加速入口**：`https://sh.lain42.top`
+- **TUIC v5 & Hysteria 2 深度原理解析**：[lilyco-42/tuic-hysteria2-deep-dive](https://github.com/lilyco-42/tuic-hysteria2-deep-dive)
 - **完整图文与运维指南**：[GUIDELINE.md](./GUIDELINE.md) ｜ 在线教程：`https://lain42.top/proxy-guide/` & `https://dev.lain42.top/vpn`
 
 ## 1. 在新 VPS 上一键部署并极限调优
 
 ```bash
-# 方式 A：推荐！一键无交互部署四协议（VLESS Reality + VMess WS + Hysteria2 + TUIC v5）+ 内核 BBR 极限调优
+# 方式 A：推荐！一键无交互部署五协议（VLESS Reality + VMess WS + Hysteria2 + TUIC v5 + AnyTLS）+ 内核 BBR 极限调优
 curl -fsSL https://sh.lain42.top | bash
 
-# 指定地区标签与自定义端口
-curl -fsSL https://sh.lain42.top | bash -s -- --region "🇯🇵 日本 · 东京" --vless-port 443
+# 指定地区标签、自定义端口与 Hysteria2 Brutal 带宽
+curl -fsSL https://sh.lain42.top | bash -s -- --region "🇯🇵 日本 · 东京" --vless-port 443 --hy2-up 100 --hy2-down 200
+
+# 仅对现有老节点执行内核极限调优（BBR + fq + 64MB Socket Buffer，不覆盖现有代理配置）
+curl -fsSL https://sh.lain42.top | bash -s -- --tune-only --buffer-mb 64
 
 # 方式 B：通过大陆加速镜像直接启动 fork 后的 sing-box-yg 完整交互菜单
 curl -fsSL https://sh.lain42.top/sb.sh | bash
@@ -44,5 +48,9 @@ curl -fsSL https://sh.lain42.top | bash -s -- --yg
 
 - 拥塞控制：`net.core.default_qdisc = fq` + `net.ipv4.tcp_congestion_control = bbr`
 - 连接提速：`tcp_fastopen = 3`、`tcp_slow_start_after_idle = 0`、`tcp_mtu_probing = 1`
-- 高并发大缓冲：`rmem_max / wmem_max = 64MB`、`somaxconn = 32768`、`LimitNOFILE = 1048576`
-- 协议规范：自动修正 VMess WebSocket `path` 前导 `/`，启用 `xtls-rprx-vision` 与 TUIC `zero_rtt_handshake` + `bbr`
+- 高并发大缓冲：`rmem_max / wmem_max = 64MB`（支持 `--buffer-mb` 按内存调整）、`somaxconn = 32768`、`LimitNOFILE = 1048576`
+- 协议规范：
+  - **TUIC v5**：服务端 `zero_rtt_handshake: true` + `bbr`，客户端自动开启 `reduce-rtt: true`（0-RTT）与 `udp-relay-mode: native`（RFC 9221）
+  - **Hysteria 2**：支持 UDP 端口跳跃（`20000-40000` + 自动持久化 iptables）与 Brutal 带宽声明（`--hy2-up` / `--hy2-down`）
+  - **AnyTLS + VLESS Reality + VMess WS**：自动修正 WS `path` 前导 `/`，启用 `xtls-rprx-vision` 与 AnyTLS padding
+- **实测收益**（详见 [深度研究报告](https://github.com/lilyco-42/tuic-hysteria2-deep-dive/blob/main/REPORT.md)）：仅对默认 208KB 缓冲的老节点执行 `--tune-only`，跨太平洋 Hysteria 2 吞吐提升 **+59%**（3.33 → 5.29 MB/s），大洋洲 TUIC v5 提升 **+54%**（1.57 → 2.42 MB/s）

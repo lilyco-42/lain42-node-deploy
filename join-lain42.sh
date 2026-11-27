@@ -40,7 +40,7 @@ ok "已获取 ${COUNT} 个节点定义 (server=${SERVER_IP})"
 
 # 上传并合并到 lain42.top:/opt/studio-billing/proxy-extras.json
 info "正在合并到 ${LAIN42_SSH}:/opt/studio-billing/proxy-extras.json 并触发实测健康/吞吐审核..."
-ssh -o StrictHostKeyChecking=no "$LAIN42_SSH" "DIALER_PROXY='${DIALER_PROXY}' python3 - << 'PY'
+ssh -o StrictHostKeyChecking=no "$LAIN42_SSH" "DIALER_PROXY='${DIALER_PROXY}' python3 -c \"
 import json, os, shutil, socket, sys, time
 from pathlib import Path
 
@@ -51,7 +51,6 @@ extras_path = Path('/opt/studio-billing/proxy-extras.json')
 shutil.copy2(extras_path, f'/opt/studio-billing/proxy-extras.json.bak-join-{int(time.time())}')
 existing = json.loads(extras_path.read_text(encoding='utf-8'))
 
-# 自动探测从国内主站到目标节点 TCP 端口是否直连畅通；若超时且未显式指定 dialer，自动挂载高速跳板
 def tcp_open(ip, port):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(1.8)
@@ -69,15 +68,13 @@ for n in new_nodes:
             n['dialer-proxy'] = dialer
         elif not tcp_open(n['server'], n['port']):
             n['dialer-proxy'] = '🇰🇷 韩国 · VLESS'
-            print(f\"  [auto-relay] {n['name']} TCP 直连受阻，自动挂载跳板: 🇰🇷 韩国 · VLESS\")
+            print(f'  [auto-relay] {n[chr(110)+chr(97)+chr(109)+chr(101)]} TCP 直连受阻，自动挂载跳板: 🇰🇷 韩国 · VLESS')
 
-# 按 (server, type) 去重替换
 new_keys = {(n['server'], n['type']) for n in new_nodes}
 merged = [x for x in existing if (x.get('server'), x.get('type')) not in new_keys] + new_nodes
 extras_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 print(f'Merged {len(new_nodes)} nodes into proxy-extras.json (total={len(merged)})')
-PY
-" < "$TMP_JSON"
+\"" < "$TMP_JSON"
 
 info "正在主站运行真实 HTTPS 探活与 4MB 吞吐测速..."
 ssh -o StrictHostKeyChecking=no "$LAIN42_SSH" "
